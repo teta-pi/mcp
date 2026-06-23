@@ -5,6 +5,8 @@ import {
   searchBusinesses,
   getBusinessProfile,
   getVerificationProof,
+  verifyEndpoint,
+  resolveIntent,
 } from "./client.js";
 
 const server = new McpServer({
@@ -287,6 +289,135 @@ server.tool(
   }
 );
 
+// ── Tool 5: verify_endpoint ───────────────────────────────────────────────────
+
+server.tool(
+  "verify_endpoint",
+  "Verify that an agent endpoint is active, belongs to a declared entity, and its data " +
+    "is consistent with the verified profile on TETA+PI. " +
+    "Use before routing requests to an agent to confirm the endpoint is legitimate.",
+  {
+    endpoint_url: z.string().url().describe("The agent endpoint URL to verify"),
+    entity_id: z
+      .string()
+      .optional()
+      .describe("Entity slug or UUID on TETA+PI (optional but recommended)"),
+  },
+  async ({ endpoint_url, entity_id }) => {
+    const result = await verifyEndpoint({ endpoint_url, entity_id });
+
+    const statusLines = [
+      `  active:            ${result.is_active ? "✓ yes" : "✗ no"}`,
+      `  belongs to entity: ${result.belongs_to_entity ? "✓ yes" : "✗ no"}`,
+      `  data consistent:   ${result.data_consistent ? "✓ yes" : "✗ no"}`,
+      `  last checked:      ${result.last_checked}`,
+      result.verification_proof ? `  proof:             ${result.verification_proof}` : null,
+    ].filter(Boolean);
+
+    const allPassed = result.is_active && result.belongs_to_entity && result.data_consistent;
+    const verdict = allPassed
+      ? "VERIFIED — endpoint is active, ownership confirmed, data consistent."
+      : !result.is_active
+      ? "FAILED — endpoint did not respond."
+      : !result.belongs_to_entity
+      ? "UNVERIFIED — endpoint domain does not match the declared entity."
+      : "PARTIAL — endpoint is active but data does not match the verified profile.";
+
+    const text = [
+      `# Endpoint Verification`,
+      `Endpoint: ${endpoint_url}`,
+      entity_id ? `Entity:   ${entity_id}` : null,
+      "",
+      `Verdict: ${verdict}`,
+      "",
+      "## Checks",
+      ...statusLines,
+    ]
+      .filter((l) => l !== null)
+      .join("\n");
+
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+// ── Tool 6: search_entities ───────────────────────────────────────────────────
+
+server.tool(
+  "search_entities",
+  "Search verified entities by intent, type, or location. Returns businesses, people, " +
+    "and organizations with verification status and agent endpoints. " +
+    "More powerful than search_verified_businesses — supports all entity types and agent endpoint filtering.",
+  {
+    query: z.string().describe("Natural language query, e.g. 'verified pizza restaurant Lisbon' or 'freight agent Germany'"),
+    entity_type: z
+      .enum(["business", "person", "organization", "all"])
+      .default("all")
+      .describe("Filter by entity type (default: all)"),
+    verified_only: z
+      .boolean()
+      .default(true)
+      .describe("Only return registry-verified entities (default: true)"),
+    has_agent_endpoint: z
+      .boolean()
+      .optional()
+      .describe("Filter to entities that have a declared agent endpoint"),
+    limit: z.number().int().min(1).max(50).default(10),
+  },
+  async ({ query, entity_type, verified_only, has_agent_endpoint, limit }) => {
+    // For "all" we run parallel searches across entity types
+    const types = entity_type === "all" ? ["business", "person", "organization"] : [entity_type];
+
+    const allResults = (
+      await Promise.all(
+        types.map((et) =>
+          searchBusinesses({
+            q: query,
+            entity_type: et,
+            has_agent_endpoint,
+            limit,
+            level: verified_only ? undefined : "any",
+          }).then((r) => r.results)
+        )
+      )
+    )
+      .flat()
+      .sort((a, b) => b.relevance_score - a.relevance_score)
+      .slice(0, limit);
+
+    if (allResults.length === 0) {
+      return {
+        content: [{ type: "text", text: `No verified entities found for "${query}".` }],
+      };
+    }
+
+    const lines = allResults.map((e, i) => {
+      const level = e.verification_level.toUpperCase();
+      const type = e.entity_type.toUpperCase();
+      const loc = e.country ? ` · ${e.country}` : "";
+      const ep = e.agent_endpoint
+        ? `\n   endpoint: ${e.agent_endpoint}${e.agent_endpoint_verified ? " [verified]" : " [unverified]"}`
+        : "";
+      return (
+        `${i + 1}. [${type}][${level}]${loc} ${e.name}` +
+        `\n   id: ${e.id}${ep}` +
+        (e.description ? `\n   ${e.description.slice(0, 100)}` : "")
+      );
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Found ${allResults.length} entity/entities for "${query}":\n\n` +
+            lines.join("\n\n") +
+            "\n\nUse get_business_profile(id) or verify_endpoint(endpoint_url, entity_id) for details.",
+        },
+      ],
+    };
+  }
+);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function trustLevelNote(level: string): string {
@@ -331,10 +462,12 @@ const httpServer = createServer(async (req, res) => {
         version: "0.1.0",
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
+          "search_entities",
           "search_verified_businesses",
           "get_business_profile",
           "verify_business_claim",
           "get_verification_proof",
+          "verify_endpoint",
         ],
         transport: ["http", "sse"],
       })

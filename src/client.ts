@@ -3,6 +3,7 @@ const API_BASE = process.env.TETA_PI_API_URL ?? "http://localhost:8000/api/v1";
 // Matches api/app/schemas/business.py :: BusinessSearchResult
 export interface BusinessSearchResult {
   id: string;
+  entity_type: "business" | "person" | "organization";
   name: string;
   slug: string;
   description: string | null;
@@ -19,6 +20,8 @@ export interface BusinessSearchResult {
     claims?: string[];
     confidence?: number;
   } | null;
+  agent_endpoint: string | null;
+  agent_endpoint_verified: boolean;
 }
 
 // Matches api/app/schemas/business.py :: AgentBusinessProfile
@@ -83,12 +86,16 @@ export async function searchBusinesses(params: {
   q: string;
   level?: string;
   country?: string;
+  entity_type?: string;
+  has_agent_endpoint?: boolean;
   limit?: number;
   offset?: number;
 }): Promise<{ results: BusinessSearchResult[]; total: number }> {
   const qs = new URLSearchParams({ q: params.q });
   if (params.level && params.level !== "any") qs.set("level", params.level);
   if (params.country) qs.set("country", params.country);
+  if (params.entity_type) qs.set("entity_type", params.entity_type);
+  if (params.has_agent_endpoint != null) qs.set("has_agent_endpoint", String(params.has_agent_endpoint));
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.offset) qs.set("offset", String(params.offset));
 
@@ -102,4 +109,50 @@ export async function getBusinessProfile(id: string): Promise<AgentBusinessProfi
 
 export async function getVerificationProof(id: string): Promise<VerificationProof> {
   return apiFetch<VerificationProof>(`/businesses/${id}/proof`);
+}
+
+// ── New in architecture sync June 23 ─────────────────────────────────────────
+
+export interface EndpointVerifyResult {
+  endpoint: string;
+  entity_id: string | null;
+  is_active: boolean;
+  belongs_to_entity: boolean;
+  data_consistent: boolean;
+  last_checked: string;
+  verification_proof: string | null;
+}
+
+export interface IntentResolution {
+  entity_id: string;
+  entity_type: string;
+  entity_name: string;
+  relevance_score: number;
+  verification_level: string;
+  agent_endpoint: string | null;
+  agent_endpoint_verified: boolean;
+  country: string | null;
+  registry_id: string | null;
+}
+
+export async function verifyEndpoint(params: {
+  endpoint_url: string;
+  entity_id?: string;
+}): Promise<EndpointVerifyResult> {
+  return apiFetch<EndpointVerifyResult>("/verify-endpoint", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
+}
+
+export async function resolveIntent(params: {
+  query: string;
+  entity_type?: string;
+  verified_only?: boolean;
+  has_agent_endpoint?: boolean;
+}): Promise<{ query: string; results: IntentResolution[] }> {
+  return apiFetch("/resolve-intent", {
+    method: "POST",
+    body: JSON.stringify(params),
+  });
 }
