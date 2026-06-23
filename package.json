@@ -1,0 +1,23 @@
+{
+  "name": "@teta-pi/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TETA+PI MCP Server — trust infrastructure for AI agents",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}
