@@ -14,90 +14,15 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
-// ── Tool 1: search_verified_entities (quick search) ───────────────────────────
+// ── Tool 1: teta_verify_entity ──────────────────────────────────────────────
 
 server.tool(
-  "search_verified_entities",
-  "Search for verified businesses, journalists, artists, and organizations. " +
-    "Returns ranked results with trust levels: 'full' (registry + C2PA + BTC), " +
-    "'partial' (registry + BTC), 'registry' (registry only). " +
-    "Use this to find a verified entity ID before fetching its full profile.",
+  "teta_verify_entity",
+  "Retrieve the full verified profile of an entity — business, journalist, or artist: " +
+    "registry attestation, content blocks with media provenance, and AI-extracted categories. " +
+    "Requires a UUID from teta_search.",
   {
-    query: z
-      .string()
-      .describe("Natural language search query, e.g. 'organic coffee roasters Berlin'"),
-    trust_level: z
-      .enum(["any", "registry", "partial", "full"])
-      .default("any")
-      .describe("Minimum trust level filter (default: any)"),
-    country: z
-      .string()
-      .length(2)
-      .optional()
-      .describe("ISO 3166-1 alpha-2 country code filter, e.g. 'DE', 'UA', 'GB'"),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(50)
-      .default(10)
-      .describe("Maximum number of results (1–50, default 10)"),
-  },
-  async ({ query, trust_level, country, limit }) => {
-    const data = await searchBusinesses({
-      q: query,
-      level: trust_level,
-      country,
-      limit,
-    });
-
-    if (data.results.length === 0) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `No verified businesses found for "${query}".`,
-          },
-        ],
-      };
-    }
-
-    const lines = data.results.map((b, i) => {
-      const level = b.verification_level.toUpperCase();
-      const loc = b.country ? ` · ${b.country}` : "";
-      const cats = b.ai_categories;
-      const industry = cats?.industry ? ` · ${cats.industry}` : "";
-      const badges = b.badges.length ? `  [${b.badges.join(", ")}]` : "";
-      return (
-        `${i + 1}. [${level}]${loc}${industry} ${b.name}` +
-        `\n   id: ${b.id}${badges}` +
-        (b.description ? `\n   ${b.description.slice(0, 120)}` : "")
-      );
-    });
-
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Found ${data.total} result(s) for "${query}":\n\n` +
-            lines.join("\n\n") +
-            "\n\nCall get_entity_profile(id) for full details on any result.",
-        },
-      ],
-    };
-  }
-);
-
-// ── Tool 2: get_entity_profile ──────────────────────────────────────────────
-
-server.tool(
-  "get_entity_profile",
-  "Retrieve the full verified profile of an entity: registry attestation, " +
-    "content blocks with media provenance flags, and AI-extracted categories. " +
-    "Requires a UUID from search_verified_entities.",
-  {
-    id: z.string().uuid().describe("Entity UUID from search_verified_entities"),
+    id: z.string().uuid().describe("Entity UUID from teta_search"),
   },
   async ({ id }) => {
     const profile = await getBusinessProfile(id);
@@ -162,15 +87,15 @@ server.tool(
   }
 );
 
-// ── Tool 3: verify_entity_claim ─────────────────────────────────────────────
+// ── Tool 3: teta_verify_claim ────────────────────────────────────────────────
 
 server.tool(
-  "verify_entity_claim",
-  "Check whether a specific claim about a business is supported by its verified " +
-    "content blocks. Returns the verified evidence for you to reason over, " +
+  "teta_verify_claim",
+  "Check whether a specific claim about an entity is supported by its verified " +
+    "content blocks. Returns the evidence for you to reason over, " +
     "along with the trust level of that evidence.",
   {
-    id: z.string().uuid().describe("Entity UUID"),
+    id: z.string().uuid().describe("Entity UUID from teta_search"),
     claim: z
       .string()
       .max(500)
@@ -233,13 +158,13 @@ server.tool(
   }
 );
 
-// ── Tool 4: get_verification_proof ────────────────────────────────────────────
+// ── Tool 4: teta_get_proof ───────────────────────────────────────────────────
 
 server.tool(
-  "get_verification_proof",
-  "Retrieve raw cryptographic proof for a business: registry attestation hash, " +
+  "teta_get_proof",
+  "Retrieve raw cryptographic proof for an entity: registry attestation hash, " +
     "C2PA manifest hashes, and Bitcoin OpenTimestamps proofs. " +
-    "Use this when you need machine-verifiable proof rather than a human-readable summary.",
+    "Use when you need machine-verifiable proof rather than a human-readable summary.",
   {
     id: z.string().uuid().describe("Entity UUID"),
   },
@@ -289,12 +214,12 @@ server.tool(
   }
 );
 
-// ── Tool 5: verify_endpoint ───────────────────────────────────────────────────
+// ── Tool 5: teta_verify_endpoint ─────────────────────────────────────────────
 
 server.tool(
-  "verify_endpoint",
-  "Verify that an agent endpoint is active, belongs to a declared entity, and its data " +
-    "is consistent with the verified profile on TETA+PI. " +
+  "teta_verify_endpoint",
+  "Verify that an agent endpoint (domain or URL) is active, belongs to a declared entity, " +
+    "and is consistent with the verified profile on TETA+PI. " +
     "Use before routing requests to an agent to confirm the endpoint is legitimate.",
   {
     endpoint_url: z.string().url().describe("The agent endpoint URL to verify"),
@@ -340,19 +265,24 @@ server.tool(
   }
 );
 
-// ── Tool 6: search_entities ───────────────────────────────────────────────────
+// ── Tool 6: teta_search ──────────────────────────────────────────────────────
 
 server.tool(
-  "search_entities",
-  "Search verified entities by intent, type, or location. Returns businesses, people, " +
-    "and organizations with verification status and agent endpoints. " +
-    "More powerful than search_verified_entities — supports all entity types and agent endpoint filtering.",
+  "teta_search",
+  "Search verified entities by name, domain, intent, type, or location. " +
+    "Returns businesses, journalists, artists, and organizations with verification level and agent endpoints. " +
+    "Use the returned entity ID with teta_verify_entity or teta_get_proof for full details.",
   {
-    query: z.string().describe("Natural language query, e.g. 'verified pizza restaurant Lisbon' or 'freight agent Germany'"),
+    query: z.string().describe("Natural language query, e.g. 'organic bakery Berlin' or 'investigative journalist Ukraine'"),
     entity_type: z
       .enum(["business", "person", "organization", "all"])
       .default("all")
       .describe("Filter by entity type (default: all)"),
+    country: z
+      .string()
+      .length(2)
+      .optional()
+      .describe("ISO 3166-1 alpha-2 country code, e.g. 'DE', 'UA', 'GB'"),
     verified_only: z
       .boolean()
       .default(true)
@@ -363,7 +293,7 @@ server.tool(
       .describe("Filter to entities that have a declared agent endpoint"),
     limit: z.number().int().min(1).max(50).default(10),
   },
-  async ({ query, entity_type, verified_only, has_agent_endpoint, limit }) => {
+  async ({ query, entity_type, country, verified_only, has_agent_endpoint, limit }) => {
     // For "all" we run parallel searches across entity types
     const types = entity_type === "all" ? ["business", "person", "organization"] : [entity_type];
 
@@ -373,6 +303,7 @@ server.tool(
           searchBusinesses({
             q: query,
             entity_type: et,
+            country,
             has_agent_endpoint,
             limit,
             level: verified_only ? undefined : "any",
@@ -411,7 +342,7 @@ server.tool(
           text:
             `Found ${allResults.length} entity/entities for "${query}":\n\n` +
             lines.join("\n\n") +
-            "\n\nUse get_entity_profile(id) or verify_endpoint(endpoint_url, entity_id) for details.",
+            "\n\nUse teta_verify_entity(id) for full profile or teta_verify_endpoint(endpoint_url, entity_id) to verify an agent.",
         },
       ],
     };
@@ -462,12 +393,11 @@ const httpServer = createServer(async (req, res) => {
         version: "0.1.0",
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
-          "search_verified_entities",
-          "search_entities",
-          "get_entity_profile",
-          "verify_entity_claim",
-          "get_verification_proof",
-          "verify_endpoint",
+          "teta_search",
+          "teta_verify_entity",
+          "teta_verify_claim",
+          "teta_get_proof",
+          "teta_verify_endpoint",
         ],
         transport: ["http", "sse"],
       })
