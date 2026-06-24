@@ -82,22 +82,22 @@ server.tool(
           text:
             `Found ${data.total} result(s) for "${query}":\n\n` +
             lines.join("\n\n") +
-            "\n\nCall get_business_profile(id) for full details on any result.",
+            "\n\nCall get_entity_profile(id) for full details on any result.",
         },
       ],
     };
   }
 );
 
-// ── Tool 2: get_business_profile ──────────────────────────────────────────────
+// ── Tool 2: get_entity_profile ──────────────────────────────────────────────
 
 server.tool(
-  "get_business_profile",
-  "Retrieve the full verified profile of a business: registry attestation, " +
+  "get_entity_profile",
+  "Retrieve the full verified profile of an entity: registry attestation, " +
     "content blocks with media provenance flags, and AI-extracted categories. " +
     "Requires a UUID from search_verified_entities.",
   {
-    id: z.string().uuid().describe("Business UUID from search_verified_entities"),
+    id: z.string().uuid().describe("Entity UUID from search_verified_entities"),
   },
   async ({ id }) => {
     const profile = await getBusinessProfile(id);
@@ -162,15 +162,15 @@ server.tool(
   }
 );
 
-// ── Tool 3: verify_business_claim ─────────────────────────────────────────────
+// ── Tool 3: verify_entity_claim ─────────────────────────────────────────────
 
 server.tool(
-  "verify_business_claim",
+  "verify_entity_claim",
   "Check whether a specific claim about a business is supported by its verified " +
     "content blocks. Returns the verified evidence for you to reason over, " +
     "along with the trust level of that evidence.",
   {
-    id: z.string().uuid().describe("Business UUID"),
+    id: z.string().uuid().describe("Entity UUID"),
     claim: z
       .string()
       .max(500)
@@ -241,7 +241,7 @@ server.tool(
     "C2PA manifest hashes, and Bitcoin OpenTimestamps proofs. " +
     "Use this when you need machine-verifiable proof rather than a human-readable summary.",
   {
-    id: z.string().uuid().describe("Business UUID"),
+    id: z.string().uuid().describe("Entity UUID"),
   },
   async ({ id }) => {
     const proof = await getVerificationProof(id);
@@ -411,7 +411,7 @@ server.tool(
           text:
             `Found ${allResults.length} entity/entities for "${query}":\n\n` +
             lines.join("\n\n") +
-            "\n\nUse get_business_profile(id) or verify_endpoint(endpoint_url, entity_id) for details.",
+            "\n\nUse get_entity_profile(id) or verify_endpoint(endpoint_url, entity_id) for details.",
         },
       ],
     };
@@ -464,8 +464,8 @@ const httpServer = createServer(async (req, res) => {
         tools: [
           "search_verified_entities",
           "search_entities",
-          "get_business_profile",
-          "verify_business_claim",
+          "get_entity_profile",
+          "verify_entity_claim",
           "get_verification_proof",
           "verify_endpoint",
         ],
