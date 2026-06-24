@@ -14,14 +14,14 @@ const server = new McpServer({
   version: "0.1.0",
 });
 
-// ── Tool 1: search_verified_businesses ────────────────────────────────────────
+// ── Tool 1: search_verified_entities (quick search) ───────────────────────────
 
 server.tool(
-  "search_verified_businesses",
-  "Search for businesses verified through official registries and C2PA-signed media. " +
+  "search_verified_entities",
+  "Search for verified businesses, journalists, artists, and organizations. " +
     "Returns ranked results with trust levels: 'full' (registry + C2PA + BTC), " +
     "'partial' (registry + BTC), 'registry' (registry only). " +
-    "Use this before get_business_profile to find the right business ID.",
+    "Use this to find a verified entity ID before fetching its full profile.",
   {
     query: z
       .string()
@@ -95,9 +95,9 @@ server.tool(
   "get_business_profile",
   "Retrieve the full verified profile of a business: registry attestation, " +
     "content blocks with media provenance flags, and AI-extracted categories. " +
-    "Requires a UUID from search_verified_businesses.",
+    "Requires a UUID from search_verified_entities.",
   {
-    id: z.string().uuid().describe("Business UUID from search_verified_businesses"),
+    id: z.string().uuid().describe("Business UUID from search_verified_entities"),
   },
   async ({ id }) => {
     const profile = await getBusinessProfile(id);
@@ -346,7 +346,7 @@ server.tool(
   "search_entities",
   "Search verified entities by intent, type, or location. Returns businesses, people, " +
     "and organizations with verification status and agent endpoints. " +
-    "More powerful than search_verified_businesses — supports all entity types and agent endpoint filtering.",
+    "More powerful than search_verified_entities — supports all entity types and agent endpoint filtering.",
   {
     query: z.string().describe("Natural language query, e.g. 'verified pizza restaurant Lisbon' or 'freight agent Germany'"),
     entity_type: z
@@ -462,8 +462,8 @@ const httpServer = createServer(async (req, res) => {
         version: "0.1.0",
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
+          "search_verified_entities",
           "search_entities",
-          "search_verified_businesses",
           "get_business_profile",
           "verify_business_claim",
           "get_verification_proof",
