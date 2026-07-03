@@ -11,7 +11,7 @@ import {
 
 const server = new McpServer({
   name: "teta-pi",
-  version: "0.1.0",
+  version: "1.1.0",
 });
 
 // ── Tool 1: teta_verify_entity ──────────────────────────────────────────────
@@ -349,6 +349,94 @@ server.tool(
   }
 );
 
+// ── Tool 7: teta_resolve_intent (flagship — TWIRA-ranked routing) ─────────────
+
+server.tool(
+  "teta_resolve_intent",
+  "Resolve a natural-language intent into TWIRA-ranked verified entities. " +
+    "TWIRA = α·Trust + β·Intent-alignment + γ·Provenance — ranking earned through " +
+    "verification history, not ads. Returns per-component score breakdown, " +
+    "first_verified_at, agent endpoint, and proof URL for each result.",
+  {
+    query: z.string().describe("Natural language intent, e.g. 'verified pizza restaurant in Lisbon'"),
+    entity_type: z
+      .enum(["business", "person", "organization", "all"])
+      .default("business")
+      .describe("Filter by entity type"),
+    limit: z.number().int().min(1).max(50).default(10),
+  },
+  async ({ query, entity_type, limit }) => {
+    const res = await resolveIntent({
+      query,
+      entity_type: entity_type === "all" ? undefined : entity_type,
+    });
+    const results = res.results.slice(0, limit);
+
+    if (results.length === 0) {
+      return {
+        content: [{ type: "text", text: `No entities resolved for intent "${query}".` }],
+      };
+    }
+
+    const lines = results.map((r: any, i: number) => {
+      const tw = r.twira
+        ? `\n   twira: ${r.twira.score} (T=${r.twira.t} I=${r.twira.i} P=${r.twira.p})`
+        : `\n   relevance: ${r.relevance_score}`;
+      const fv = r.first_verified_at ? `\n   first verified: ${r.first_verified_at}` : "";
+      const ep = r.agent_endpoint
+        ? `\n   endpoint: ${r.agent_endpoint}${r.agent_endpoint_verified ? " [verified]" : ""}`
+        : "";
+      const proof = r.proof_url ? `\n   proof: ${r.proof_url}` : "";
+      return `${i + 1}. [${r.verification_level.toUpperCase()}] ${r.entity_name} (${r.entity_type})${tw}${fv}${ep}${proof}`;
+    });
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: `TWIRA-ranked results for "${query}":\n\n` + lines.join("\n\n"),
+        },
+      ],
+    };
+  }
+);
+
+// ── Tool 8: teta_get_profile ──────────────────────────────────────────────────
+
+server.tool(
+  "teta_get_profile",
+  "Get the full public profile of a verified entity, including its public blocks " +
+    "(content, documents, media). Split from teta_verify_entity for cleaner agent UX: " +
+    "use verify for trust decisions, profile for content.",
+  {
+    id: z.string().uuid().describe("Entity UUID from teta_search"),
+  },
+  async ({ id }) => {
+    const profile = await getBusinessProfile(id);
+    const blocks = (profile.blocks ?? [])
+      .map((b: any, i: number) => {
+        const media = (b.media ?? [])
+          .map((m: any) => `      - ${m.media_type ?? "media"}: ${m.url ?? m.id}`)
+          .join("\n");
+        return `   ${i + 1}. ${b.title}${b.description ? ` — ${b.description.slice(0, 120)}` : ""}${media ? "\n" + media : ""}`;
+      })
+      .join("\n");
+
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Profile: ${profile.name}\n` +
+            `Trust level: ${profile.trust_level.toUpperCase()}\n` +
+            (profile.description ? `${profile.description}\n` : "") +
+            (blocks ? `\nPublic blocks:\n${blocks}` : "\nNo public blocks yet."),
+        },
+      ],
+    };
+  }
+);
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function trustLevelNote(level: string): string {
@@ -381,7 +469,7 @@ const { createServer } = await import("node:http");
 const httpServer = createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "0.1.0" }));
+    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "1.1.0" }));
     return;
   }
 
@@ -390,14 +478,16 @@ const httpServer = createServer(async (req, res) => {
     res.end(
       JSON.stringify({
         name: "teta-pi",
-        version: "0.1.0",
+        version: "1.1.0",
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
           "teta_search",
           "teta_verify_entity",
-          "teta_verify_claim",
-          "teta_get_proof",
           "teta_verify_endpoint",
+          "teta_get_proof",
+          "teta_resolve_intent",
+          "teta_get_profile",
+          "teta_verify_claim",
         ],
         transport: ["http", "sse"],
       })
