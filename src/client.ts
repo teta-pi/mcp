@@ -123,6 +123,14 @@ export interface EndpointVerifyResult {
   verification_proof: string | null;
 }
 
+// Per-component TWIRA breakdown (α·T + β·I + γ·P), each 0–1
+export interface TwiraBreakdown {
+  score: number;
+  t: number;
+  i: number;
+  p: number;
+}
+
 export interface IntentResolution {
   entity_id: string;
   entity_type: string;
@@ -133,6 +141,10 @@ export interface IntentResolution {
   agent_endpoint_verified: boolean;
   country: string | null;
   registry_id: string | null;
+  // Present on TWIRA-ranked results (absent on keyword-fallback results)
+  twira: TwiraBreakdown | null;
+  first_verified_at: string | null;
+  proof_url: string | null;
 }
 
 export async function verifyEndpoint(params: {
@@ -147,7 +159,8 @@ export async function verifyEndpoint(params: {
 
 export async function resolveIntent(params: {
   query: string;
-  entity_type?: string;
+  entity_types?: string[];
+  min_trust?: number;
   verified_only?: boolean;
   has_agent_endpoint?: boolean;
 }): Promise<{ query: string; results: IntentResolution[] }> {

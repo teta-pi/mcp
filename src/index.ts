@@ -11,7 +11,7 @@ import {
 
 const server = new McpServer({
   name: "teta-pi",
-  version: "1.1.0",
+  version: "1.2.0",
 });
 
 // ── Tool 1: teta_verify_entity ──────────────────────────────────────────────
@@ -355,20 +355,31 @@ server.tool(
   "teta_resolve_intent",
   "Resolve a natural-language intent into TWIRA-ranked verified entities. " +
     "TWIRA = α·Trust + β·Intent-alignment + γ·Provenance — ranking earned through " +
-    "verification history, not ads. Returns per-component score breakdown, " +
-    "first_verified_at, agent endpoint, and proof URL for each result.",
+    "verification history, not ads. Each result carries a full per-component T/I/P " +
+    "breakdown, first_verified_at (the temporal moat), agent endpoint, and a proof " +
+    "URL. Narrow results with entity_types (one or more types) and min_trust.",
   {
     query: z.string().describe("Natural language intent, e.g. 'verified pizza restaurant in Lisbon'"),
-    entity_type: z
-      .enum(["business", "person", "organization", "all"])
-      .default("business")
-      .describe("Filter by entity type"),
+    entity_types: z
+      .array(z.enum(["business", "person", "organization"]))
+      .optional()
+      .describe("Filter to one or more entity types (default: business)"),
+    min_trust: z
+      .number()
+      .min(0)
+      .max(1)
+      .optional()
+      .describe(
+        "Minimum Trust component (T) score, 0–1. Drops entities whose verification " +
+          "history is weaker than this threshold."
+      ),
     limit: z.number().int().min(1).max(50).default(10),
   },
-  async ({ query, entity_type, limit }) => {
+  async ({ query, entity_types, min_trust, limit }) => {
     const res = await resolveIntent({
       query,
-      entity_type: entity_type === "all" ? undefined : entity_type,
+      entity_types: entity_types && entity_types.length ? entity_types : undefined,
+      min_trust,
     });
     const results = res.results.slice(0, limit);
 
@@ -379,22 +390,45 @@ server.tool(
     }
 
     const lines = results.map((r: any, i: number) => {
-      const tw = r.twira
-        ? `\n   twira: ${r.twira.score} (T=${r.twira.t} I=${r.twira.i} P=${r.twira.p})`
-        : `\n   relevance: ${r.relevance_score}`;
-      const fv = r.first_verified_at ? `\n   first verified: ${r.first_verified_at}` : "";
-      const ep = r.agent_endpoint
-        ? `\n   endpoint: ${r.agent_endpoint}${r.agent_endpoint_verified ? " [verified]" : ""}`
-        : "";
-      const proof = r.proof_url ? `\n   proof: ${r.proof_url}` : "";
-      return `${i + 1}. [${r.verification_level.toUpperCase()}] ${r.entity_name} (${r.entity_type})${tw}${fv}${ep}${proof}`;
+      const level = r.verification_level.toUpperCase();
+      const parts: string[] = [
+        `${i + 1}. ${r.entity_name} — ${String(r.entity_type).toUpperCase()} · ${level}`,
+        `   id: ${r.entity_id}`,
+        r.twira
+          ? `   twira: ${r.twira.score}  ·  T(trust)=${r.twira.t} I(intent)=${r.twira.i} P(provenance)=${r.twira.p}`
+          : `   relevance: ${r.relevance_score}`,
+      ];
+      if (r.first_verified_at) parts.push(`   first_verified_at: ${r.first_verified_at}`);
+      if (r.country) parts.push(`   country: ${r.country}`);
+      if (r.agent_endpoint)
+        parts.push(
+          `   endpoint: ${r.agent_endpoint}${r.agent_endpoint_verified ? " [verified]" : " [unverified]"}`
+        );
+      if (r.proof_url) parts.push(`   proof: ${r.proof_url}`);
+      return parts.join("\n");
     });
+
+    const filters = [
+      entity_types && entity_types.length ? `types=${entity_types.join(",")}` : null,
+      min_trust != null ? `min_trust=${min_trust}` : null,
+    ].filter(Boolean);
+
+    const header =
+      `TWIRA-ranked results for "${query}"` +
+      (filters.length ? ` (${filters.join(", ")})` : "");
 
     return {
       content: [
         {
           type: "text",
-          text: `TWIRA-ranked results for "${query}":\n\n` + lines.join("\n\n"),
+          text: [
+            header,
+            "TWIRA = α·Trust + β·Intent-alignment + γ·Provenance — earned through verification history, not ads; components are 0–1.",
+            "",
+            lines.join("\n\n"),
+            "",
+            "Each result's proof URL returns machine-verifiable registry + C2PA + Bitcoin proof. Call teta_verify_endpoint(endpoint_url, entity_id) before routing to an agent.",
+          ].join("\n"),
         },
       ],
     };
@@ -469,7 +503,7 @@ const { createServer } = await import("node:http");
 const httpServer = createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "1.1.0" }));
+    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "1.2.0" }));
     return;
   }
 
@@ -478,7 +512,7 @@ const httpServer = createServer(async (req, res) => {
     res.end(
       JSON.stringify({
         name: "teta-pi",
-        version: "1.1.0",
+        version: "1.2.0",
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
           "teta_search",
