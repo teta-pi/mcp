@@ -3,7 +3,7 @@
 TypeScript server exposing TETA+PI to AI agents via the Model Context Protocol.
 Source: `mcp/src/index.ts` (tools) + `mcp/src/client.ts` (API client). Stateless —
 every tool calls `api.tetapi.dev` over HTTP. Deployed as systemd `tetapi-mcp` on
-port 3002, public at `mcp.tetapi.dev`. **Version 1.2.0.**
+port 3002, public at `mcp.tetapi.dev`. **Version 1.3.0.**
 
 ## Transport & manifest
 - HTTP + SSE via `@modelcontextprotocol/sdk` `StreamableHTTPServerTransport`.
@@ -17,10 +17,21 @@ port 3002, public at `mcp.tetapi.dev`. **Version 1.2.0.**
 | `teta_search` | search verified entities by name/type/country | `/search` |
 | `teta_verify_entity` | full verified profile + registry attestation | `/businesses/{id}/preview` |
 | `teta_verify_endpoint` | confirm a domain/endpoint belongs to a verified entity | `/verify-endpoint` |
-| `teta_get_proof` | raw cryptographic proof (registry hash, C2PA, BTC OTS) | `/businesses/{id}/proof` |
+| `teta_get_proof` | raw cryptographic proof (registry hash, C2PA, BTC OTS) **+ proof depth** (`ots_status`, `btc_timestamp_depth`, `c2pa_chain_length`, `event_count`) so agents set their own trust threshold | `/businesses/{id}/proof` |
 | `teta_resolve_intent` | **flagship** — TWIRA-ranked routing; full T/I/P breakdown, `first_verified_at`, `proof_url`; filters `entity_types` + `min_trust` | `/resolve-intent` |
 | `teta_get_profile` | public profile + public blocks (split from verify) | `/businesses/{id}/preview` |
 | `teta_verify_claim` | check a claim against an entity's verified blocks | `/businesses/{id}/preview` |
+
+**Proof depth** (`teta_get_proof` → `proof_depth`) is read straight from
+`verification_events` (the Temporal Moat) — no new tables or workers:
+- `ots_status` — strongest OTS state across the entity's events
+  (`pending` < `anchored` < `confirmed`); `null` if no events.
+- `btc_timestamp_depth` — deepest Bitcoin confirmation in blocks
+  (`current_btc_height() − btc_block`, reusing the cached mempool.space height
+  from `twira/provenance.py`); `null` when nothing is confirmed or the height is
+  unavailable.
+- `c2pa_chain_length` — number of C2PA manifests surfaced in `c2pa_proofs`.
+- `event_count` — total verification events for the entity.
 
 Keep `teta_*` names stable — agents depend on them. The two `.well-known/agent.json`
 files (landing `landing/.well-known/agent.json` and app

@@ -67,6 +67,14 @@ export interface VerificationProof {
     bitcoin_block: number | null;
     ots_proof_url: string;
   }>;
+  // Proof depth from the Temporal Moat (verification_events) — lets agents set
+  // their own trust threshold. Matches GET /businesses/{id}/proof :: proof_depth.
+  proof_depth: {
+    ots_status: "pending" | "anchored" | "confirmed" | null;
+    btc_timestamp_depth: number | null;
+    c2pa_chain_length: number;
+    event_count: number;
+  };
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {

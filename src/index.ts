@@ -11,7 +11,7 @@ import {
 
 const server = new McpServer({
   name: "teta-pi",
-  version: "1.2.0",
+  version: "1.3.0",
 });
 
 // ── Tool 1: teta_verify_entity ──────────────────────────────────────────────
@@ -163,7 +163,9 @@ server.tool(
 server.tool(
   "teta_get_proof",
   "Retrieve raw cryptographic proof for an entity: registry attestation hash, " +
-    "C2PA manifest hashes, and Bitcoin OpenTimestamps proofs. " +
+    "C2PA manifest hashes, and Bitcoin OpenTimestamps proofs. Also returns proof " +
+    "depth — OTS status (pending/anchored/confirmed), Bitcoin timestamp depth in " +
+    "blocks, and C2PA chain length — so you can set your own trust threshold. " +
     "Use when you need machine-verifiable proof rather than a human-readable summary.",
   {
     id: z.string().uuid().describe("Entity UUID"),
@@ -196,8 +198,21 @@ server.tool(
           )
         : ["  (none)"];
 
+    const depth = proof.proof_depth;
+    const depthLines = [
+      `  ots_status: ${depth.ots_status ?? "(no events)"}`,
+      `  btc_timestamp_depth: ${
+        depth.btc_timestamp_depth != null ? `${depth.btc_timestamp_depth} blocks` : "(not confirmed)"
+      }`,
+      `  c2pa_chain_length: ${depth.c2pa_chain_length}`,
+      `  event_count: ${depth.event_count}`,
+    ];
+
     const text = [
       `# Cryptographic Proof — ${id}`,
+      "",
+      "## Proof Depth",
+      ...depthLines,
       "",
       "## Registry Attestation",
       ...regLines,
@@ -503,7 +518,7 @@ const { createServer } = await import("node:http");
 const httpServer = createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "1.2.0" }));
+    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "1.3.0" }));
     return;
   }
 
@@ -512,7 +527,7 @@ const httpServer = createServer(async (req, res) => {
     res.end(
       JSON.stringify({
         name: "teta-pi",
-        version: "1.2.0",
+        version: "1.3.0",
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
           "teta_search",
