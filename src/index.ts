@@ -10,7 +10,7 @@ import {
   resolveIntent,
 } from "./client.js";
 
-export const SERVER_VERSION = "1.3.1";
+export const SERVER_VERSION = "1.4.0";
 
 // Each client session gets its own McpServer instance (registerTools is pure —
 // tool handlers hold no state, they just call api.tetapi.dev per invocation).
@@ -334,7 +334,7 @@ server.tool(
             country,
             has_agent_endpoint,
             limit,
-            level: verified_only ? undefined : "any",
+            level: verified_only ? "registry" : "any",
           }).then((r) => r.results)
         )
       )
@@ -478,7 +478,13 @@ server.tool(
     const blocks = (profile.blocks ?? [])
       .map((b: any, i: number) => {
         const media = (b.media ?? [])
-          .map((m: any) => `      - ${m.media_type ?? "media"}: ${m.url ?? m.id}`)
+          .map((m: any) => {
+            const flags: string[] = [];
+            if (m.c2pa_verified) flags.push("C2PA-signed");
+            if (m.bitcoin_confirmed) flags.push(`BTC-confirmed block #${m.bitcoin_block}`);
+            const captured = m.captured_at ? ` captured ${m.captured_at}` : "";
+            return `      - ${m.type}${captured}${flags.length ? ` [${flags.join(", ")}]` : ""}`;
+          })
           .join("\n");
         return `   ${i + 1}. ${b.title}${b.description ? ` — ${b.description.slice(0, 120)}` : ""}${media ? "\n" + media : ""}`;
       })
