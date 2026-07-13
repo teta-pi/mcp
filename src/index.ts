@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import {
   searchBusinesses,
@@ -9,11 +10,23 @@ import {
   resolveIntent,
 } from "./client.js";
 
-const server = new McpServer({
-  name: "teta-pi",
-  version: "1.3.0",
-});
+export const SERVER_VERSION = "1.3.1";
 
+// Each client session gets its own McpServer instance (registerTools is pure —
+// tool handlers hold no state, they just call api.tetapi.dev per invocation).
+// A single shared instance would mean only one client could ever be connected
+// at a time; see the `sessions` map in the HTTP bootstrap below.
+function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name: "teta-pi",
+    version: SERVER_VERSION,
+  });
+
+  registerTools(server);
+  return server;
+}
+
+function registerTools(server: McpServer): void {
 // ── Tool 1: teta_verify_entity ──────────────────────────────────────────────
 
 server.tool(
@@ -485,6 +498,7 @@ server.tool(
     };
   }
 );
+} // end registerTools
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -507,18 +521,43 @@ function trustLevelNote(level: string): string {
 
 const PORT = parseInt(process.env.MCP_PORT ?? "3002", 10);
 
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: () => crypto.randomUUID(),
-});
+// One transport per client session, keyed by the `mcp-session-id` the SDK
+// assigns on initialize. A single shared transport (the old behaviour) can
+// only ever have one active session for the life of the process — every
+// second client (a second Claude Code window, MCP Inspector, another agent)
+// gets "Server already initialized" and is locked out until a restart.
+const sessions = new Map<string, StreamableHTTPServerTransport>();
 
-await server.connect(transport);
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID",
+  "Access-Control-Expose-Headers": "Mcp-Session-Id",
+  "Access-Control-Max-Age": "86400",
+};
+
+async function readJsonBody(req: import("node:http").IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk as Buffer);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  return raw ? JSON.parse(raw) : undefined;
+}
 
 const { createServer } = await import("node:http");
 
 const httpServer = createServer(async (req, res) => {
+  for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: "1.3.0" }));
+    res.end(JSON.stringify({ status: "ok", server: "teta-pi-mcp", version: SERVER_VERSION }));
     return;
   }
 
@@ -527,7 +566,7 @@ const httpServer = createServer(async (req, res) => {
     res.end(
       JSON.stringify({
         name: "teta-pi",
-        version: "1.3.0",
+        version: SERVER_VERSION,
         description: "TETA+PI trust infrastructure for AI agents",
         tools: [
           "teta_search",
@@ -544,7 +583,69 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  await transport.handleRequest(req, res);
+  if (req.url !== "/mcp") {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32004, message: "Not found" }, id: null }));
+    return;
+  }
+
+  const sessionIdHeader = req.headers["mcp-session-id"];
+  const sessionId = typeof sessionIdHeader === "string" ? sessionIdHeader : undefined;
+  const existing = sessionId ? sessions.get(sessionId) : undefined;
+
+  if (existing) {
+    await existing.handleRequest(req, res);
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Bad Request: No valid session ID provided" },
+        id: null,
+      })
+    );
+    return;
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32700, message: "Parse error" }, id: null }));
+    return;
+  }
+
+  if (sessionId || !isInitializeRequest(body)) {
+    // Session id was supplied but unknown (process restart, expired session,
+    // or client bug) — or a fresh POST that isn't an initialize call.
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Bad Request: No valid session ID provided" },
+        id: null,
+      })
+    );
+    return;
+  }
+
+  let transport: StreamableHTTPServerTransport;
+  transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: () => crypto.randomUUID(),
+    onsessioninitialized: (id) => {
+      sessions.set(id, transport);
+    },
+  });
+  transport.onclose = () => {
+    if (transport.sessionId) sessions.delete(transport.sessionId);
+  };
+
+  await createMcpServer().connect(transport);
+  await transport.handleRequest(req, res, body);
 });
 
 httpServer.listen(PORT, () => {

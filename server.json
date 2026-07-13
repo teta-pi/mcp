@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "dev.tetapi/mcp",
+  "description": "Trust infrastructure for AI agents: search and verify people, businesses, journalists, artists and organizations via official registries, C2PA media provenance, and Bitcoin OpenTimestamps proof.",
+  "title": "TETA+PI",
+  "websiteUrl": "https://tetapi.dev",
+  "repository": {
+    "url": "https://github.com/teta-pi/platform",
+    "source": "github",
+    "subfolder": "mcp"
+  },
+  "version": "1.3.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.tetapi.dev/mcp"
+    }
+  ]
+}

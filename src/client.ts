@@ -77,17 +77,31 @@ export interface VerificationProof {
   };
 }
 
+const API_TIMEOUT_MS = 15_000;
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const url = `${API_BASE}${path}`;
-  const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...init?.headers },
-    ...init,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`API ${res.status}: ${text}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...init?.headers },
+      signal: controller.signal,
+      ...init,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      throw new Error(`API ${res.status}: ${text}`);
+    }
+    return (await res.json()) as T;
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error(`API request timed out after ${API_TIMEOUT_MS}ms: ${path}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json() as Promise<T>;
 }
 
 export async function searchBusinesses(params: {
