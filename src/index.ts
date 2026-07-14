@@ -10,7 +10,23 @@ import {
   resolveIntent,
 } from "./client.js";
 
-export const SERVER_VERSION = "1.4.0";
+export const SERVER_VERSION = "1.5.0";
+
+// Public URLs for proof_url — always the public hostnames, independent of
+// TETA_PI_API_URL (which may point at an internal address). The entity page
+// needs a real slug (by-slug lookup); the /proof endpoint takes the UUID
+// every tool already has.
+const PUBLIC_API_BASE = "https://api.tetapi.dev/api/v1";
+const PUBLIC_APP_BASE = "https://app.tetapi.dev";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function proofUrlById(id: string): string {
+  return `${PUBLIC_API_BASE}/businesses/${id}/proof`;
+}
+
+function entityPageUrl(slug: string): string {
+  return `${PUBLIC_APP_BASE}/e/${slug}`;
+}
 
 // Each client session gets its own McpServer instance (registerTools is pure —
 // tool handlers hold no state, they just call api.tetapi.dev per invocation).
@@ -31,9 +47,9 @@ function registerTools(server: McpServer): void {
 
 server.tool(
   "teta_verify_entity",
-  "Retrieve the full verified profile of an entity — business, journalist, or artist: " +
-    "registry attestation, content blocks with media provenance, and AI-extracted categories. " +
-    "Requires a UUID from teta_search.",
+  "Verify if a business, journalist, or artist is real before your agent trusts a claim " +
+    "about them: registry attestation, content blocks with media provenance, and " +
+    "AI-extracted categories. Requires a UUID from teta_search.",
   {
     id: z.string().uuid().describe("Entity UUID from teta_search"),
   },
@@ -92,6 +108,8 @@ server.tool(
       "",
       "## AI Categories",
       catLines.join("\n"),
+      "",
+      `Proof: ${proofUrlById(id)}`,
     ]
       .join("\n")
       .trim();
@@ -104,9 +122,9 @@ server.tool(
 
 server.tool(
   "teta_verify_claim",
-  "Check whether a specific claim about an entity is supported by its verified " +
-    "content blocks. Returns the evidence for you to reason over, " +
-    "along with the trust level of that evidence.",
+  "Check a specific claim about an entity against its verified evidence — e.g. " +
+    "'ISO 9001 certified' or 'has a Berlin office' — before your agent repeats it. " +
+    "Returns the supporting evidence and its trust level for you to reason over.",
   {
     id: z.string().uuid().describe("Entity UUID from teta_search"),
     claim: z
@@ -129,7 +147,8 @@ server.tool(
               `INSUFFICIENT EVIDENCE\n\n` +
               `"${profile.name}" has no verified content blocks.\n` +
               `Cannot evaluate: "${claim}"\n\n` +
-              `Trust level: ${profile.trust_level.toUpperCase()}`,
+              `Trust level: ${profile.trust_level.toUpperCase()}\n` +
+              `Proof: ${proofUrlById(id)}`,
           },
         ],
       };
@@ -165,6 +184,7 @@ server.tool(
       evidence,
       ``,
       trustLevelNote(profile.trust_level),
+      `Proof: ${proofUrlById(id)}`,
     ].join("\n");
 
     return { content: [{ type: "text", text }] };
@@ -175,11 +195,11 @@ server.tool(
 
 server.tool(
   "teta_get_proof",
-  "Retrieve raw cryptographic proof for an entity: registry attestation hash, " +
-    "C2PA manifest hashes, and Bitcoin OpenTimestamps proofs. Also returns proof " +
-    "depth — OTS status (pending/anchored/confirmed), Bitcoin timestamp depth in " +
-    "blocks, and C2PA chain length — so you can set your own trust threshold. " +
-    "Use when you need machine-verifiable proof rather than a human-readable summary.",
+  "Pull the raw cryptographic proof behind an entity's verification — registry " +
+    "attestation hash, C2PA manifest hashes, Bitcoin OpenTimestamps — so your agent " +
+    "can set its own trust threshold instead of taking a badge on faith. Includes " +
+    "proof depth: OTS status (pending/anchored/confirmed), Bitcoin timestamp depth " +
+    "in blocks, and C2PA chain length.",
   {
     id: z.string().uuid().describe("Entity UUID"),
   },
@@ -235,6 +255,8 @@ server.tool(
       "",
       `## Bitcoin OpenTimestamps (${proof.bitcoin_proofs.length})`,
       ...btcLines,
+      "",
+      `Proof: ${proofUrlById(id)}`,
     ]
       .join("\n");
 
@@ -246,9 +268,9 @@ server.tool(
 
 server.tool(
   "teta_verify_endpoint",
-  "Verify that an agent endpoint (domain or URL) is active, belongs to a declared entity, " +
-    "and is consistent with the verified profile on TETA+PI. " +
-    "Use before routing requests to an agent to confirm the endpoint is legitimate.",
+  "Confirm an agent endpoint is live, actually belongs to the entity it claims to, and " +
+    "matches its verified profile — run this before your agent routes a request or a " +
+    "payment to it.",
   {
     endpoint_url: z.string().url().describe("The agent endpoint URL to verify"),
     entity_id: z
@@ -276,6 +298,10 @@ server.tool(
       ? "UNVERIFIED — endpoint domain does not match the declared entity."
       : "PARTIAL — endpoint is active but data does not match the verified profile.";
 
+    // entity_id may be a slug or a UUID (per param description) — the /proof
+    // endpoint takes a UUID, so only surface a proof_url when we have one.
+    const proofUrl = entity_id && UUID_RE.test(entity_id) ? proofUrlById(entity_id) : null;
+
     const text = [
       `# Endpoint Verification`,
       `Endpoint: ${endpoint_url}`,
@@ -285,6 +311,8 @@ server.tool(
       "",
       "## Checks",
       ...statusLines,
+      proofUrl ? "" : null,
+      proofUrl ? `Proof: ${proofUrl}` : null,
     ]
       .filter((l) => l !== null)
       .join("\n");
@@ -297,9 +325,10 @@ server.tool(
 
 server.tool(
   "teta_search",
-  "Search verified entities by name, domain, intent, type, or location. " +
-    "Returns businesses, journalists, artists, and organizations with verification level and agent endpoints. " +
-    "Use the returned entity ID with teta_verify_entity or teta_get_proof for full details.",
+  "Find a real, verified business, person, journalist, artist, or organization by name, " +
+    "domain, or location — before your agent trusts a claim or routes to it. Returns " +
+    "verification level and agent endpoints; feed the entity ID to teta_verify_entity " +
+    "or teta_get_proof for full details.",
   {
     query: z.string().describe("Natural language query, e.g. 'organic bakery Berlin' or 'investigative journalist Ukraine'"),
     entity_type: z
@@ -359,7 +388,8 @@ server.tool(
       return (
         `${i + 1}. [${type}][${level}]${loc} ${e.name}` +
         `\n   id: ${e.id}${ep}` +
-        (e.description ? `\n   ${e.description.slice(0, 100)}` : "")
+        (e.description ? `\n   ${e.description.slice(0, 100)}` : "") +
+        `\n   proof: ${entityPageUrl(e.slug)}`
       );
     });
 
@@ -381,11 +411,11 @@ server.tool(
 
 server.tool(
   "teta_resolve_intent",
-  "Resolve a natural-language intent into TWIRA-ranked verified entities. " +
-    "TWIRA = α·Trust + β·Intent-alignment + γ·Provenance — ranking earned through " +
-    "verification history, not ads. Each result carries a full per-component T/I/P " +
-    "breakdown, first_verified_at (the temporal moat), agent endpoint, and a proof " +
-    "URL. Narrow results with entity_types (one or more types) and min_trust.",
+  "Ask for what your agent needs in plain language — 'a verified pizza restaurant in " +
+    "Lisbon', 'a real investigative journalist in Ukraine' — and get back TWIRA-ranked " +
+    "verified entities, ranked by earned verification history, not ads. Each result " +
+    "carries a full per-component T/I/P breakdown, first_verified_at (the temporal " +
+    "moat), agent endpoint, and a proof URL. Narrow with entity_types and min_trust.",
   {
     query: z.string().describe("Natural language intent, e.g. 'verified pizza restaurant in Lisbon'"),
     entity_types: z
@@ -467,9 +497,9 @@ server.tool(
 
 server.tool(
   "teta_get_profile",
-  "Get the full public profile of a verified entity, including its public blocks " +
-    "(content, documents, media). Split from teta_verify_entity for cleaner agent UX: " +
-    "use verify for trust decisions, profile for content.",
+  "Pull an entity's public content — documents, media, written blocks — once your agent " +
+    "already trusts it. Use teta_verify_entity first for the trust decision; use this " +
+    "one for the content itself.",
   {
     id: z.string().uuid().describe("Entity UUID from teta_search"),
   },
@@ -498,7 +528,8 @@ server.tool(
             `Profile: ${profile.name}\n` +
             `Trust level: ${profile.trust_level.toUpperCase()}\n` +
             (profile.description ? `${profile.description}\n` : "") +
-            (blocks ? `\nPublic blocks:\n${blocks}` : "\nNo public blocks yet."),
+            (blocks ? `\nPublic blocks:\n${blocks}` : "\nNo public blocks yet.") +
+            `\n\nProof: ${proofUrlById(id)}`,
         },
       ],
     };

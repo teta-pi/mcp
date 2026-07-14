@@ -5,11 +5,10 @@
   "title": "TETA+PI",
   "websiteUrl": "https://tetapi.dev",
   "repository": {
-    "url": "https://github.com/teta-pi/platform",
-    "source": "github",
-    "subfolder": "mcp"
+    "url": "https://github.com/teta-pi/mcp",
+    "source": "github"
   },
-  "version": "1.3.1",
+  "version": "1.5.0",
   "remotes": [
     {
       "type": "streamable-http",
