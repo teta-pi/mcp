@@ -1,0 +1,51 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: Deploy → mcp.tetapi.dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build MCP server
+        run: |
+          npm install
+          npx tsc
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/tetapi_ed25519
+          chmod 600 ~/.ssh/tetapi_ed25519
+          ssh-keyscan -H 164.90.235.66 >> ~/.ssh/known_hosts
+
+      - name: Sync MCP server
+        run: |
+          rsync -az -e "ssh -i ~/.ssh/tetapi_ed25519" \
+            --delete \
+            dist/ root@164.90.235.66:/opt/tetapi/mcp/dist/
+          rsync -az -e "ssh -i ~/.ssh/tetapi_ed25519" \
+            package.json \
+            root@164.90.235.66:/opt/tetapi/mcp/
+
+      - name: Install prod deps + restart
+        run: |
+          ssh -i ~/.ssh/tetapi_ed25519 root@164.90.235.66 bash << 'REMOTE'
+          set -e
+          cd /opt/tetapi/mcp && npm install --omit=dev --no-audit --no-fund
+          systemctl restart tetapi-mcp
+          sleep 3
+          systemctl is-active --quiet tetapi-mcp \
+            && echo "✓ MCP up" \
+            || { journalctl -u tetapi-mcp -n 30 --no-pager; exit 1; }
+          REMOTE
