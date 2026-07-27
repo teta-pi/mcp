@@ -10,7 +10,7 @@ import {
   resolveIntent,
 } from "./client.js";
 
-export const SERVER_VERSION = "1.5.0";
+export const SERVER_VERSION = "1.5.1";
 
 // Public URLs for proof_url — always the public hostnames, independent of
 // TETA_PI_API_URL (which may point at an internal address). The entity page
@@ -431,13 +431,18 @@ server.tool(
         "Minimum Trust component (T) score, 0–1. Drops entities whose verification " +
           "history is weaker than this threshold."
       ),
+    verified_only: z
+      .boolean()
+      .default(true)
+      .describe("Only return registry-verified entities (default: true) — same semantics as teta_search"),
     limit: z.number().int().min(1).max(50).default(10),
   },
-  async ({ query, entity_types, min_trust, limit }) => {
+  async ({ query, entity_types, min_trust, verified_only, limit }) => {
     const res = await resolveIntent({
       query,
       entity_types: entity_types && entity_types.length ? entity_types : undefined,
       min_trust,
+      verified_only,
     });
     const results = res.results.slice(0, limit);
 
