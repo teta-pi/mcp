@@ -4,7 +4,7 @@ TypeScript server exposing TETA+PI to AI agents via the Model Context Protocol.
 Source: `mcp/src/index.ts` (tools + HTTP bootstrap) + `mcp/src/client.ts` (API
 client, 15s timeout per call). Tool handlers are stateless — every call hits
 `api.tetapi.dev` over HTTP. Deployed as systemd `tetapi-mcp` on port 3002,
-public at `mcp.tetapi.dev`. **Version 1.3.1.**
+public at `mcp.tetapi.dev`. **Version 1.5.1.**
 
 ## Transport & manifest
 - HTTP + SSE via `@modelcontextprotocol/sdk` `StreamableHTTPServerTransport`,
@@ -64,6 +64,27 @@ found the deployed server unusable for more than one client at a time:
   (`SERVER_VERSION`), the `/.well-known/mcp` manifest, and both `agent.json`
   files.
 
+## 2.7 fix — `teta_resolve_intent` `verified_only` mapping (2026-07-27)
+`teta_resolve_intent` never declared `verified_only` in its zod schema, so any
+value a caller passed was silently dropped by the SDK's schema validation and
+the REST call to `/resolve-intent` always fell through to the API's default
+(`true`). Fixed in `mcp/src/index.ts`: the tool now exposes `verified_only`
+(default `true`, same semantics/default as `teta_search`) and threads it into
+the `resolveIntent()` call, matching raw REST behaviour. Verified live via a
+real MCP client (raw JSON-RPC/curl session) — `verified_only:false` with
+query `"artificial intelligence consulting services"` returns HELLFIRE
+Solutions (TWIRA `I=0.3153`, `verification_level: "none"`), same as a direct
+`POST /resolve-intent` call. Version 1.5.0 → 1.5.1.
+
+**Caveat found while verifying, not fixed here (API-side, out of scope for
+`mcp/src/*`):** `app/twira/resolver.py::twira_resolve` (in `teta-pi/api`)
+doesn't filter by `verified_only` at all — the TWIRA-ranked path (the one
+that runs whenever embeddings exist, i.e. almost always since 5.1) returns
+unverified entities regardless of the flag. `verified_only` currently only
+takes effect on the keyword-fallback path in `IntentResolver.resolve`. So
+today the flag is *correctly plumbed* from MCP but *not enforced* by the API
+for TWIRA results. Logged in `docs/known-issues.md`.
+
 ## Tools (7)
 | Tool | Purpose | Backend |
 |---|---|---|
@@ -71,7 +92,7 @@ found the deployed server unusable for more than one client at a time:
 | `teta_verify_entity` | full verified profile + registry attestation | `/businesses/{id}/preview` |
 | `teta_verify_endpoint` | confirm a domain/endpoint belongs to a verified entity | `/verify-endpoint` |
 | `teta_get_proof` | raw cryptographic proof (registry hash, C2PA, BTC OTS) **+ proof depth** (`ots_status`, `btc_timestamp_depth`, `c2pa_chain_length`, `event_count`) so agents set their own trust threshold | `/businesses/{id}/proof` |
-| `teta_resolve_intent` | **flagship** — TWIRA-ranked routing; full T/I/P breakdown, `first_verified_at`, `proof_url`; filters `entity_types` + `min_trust` | `/resolve-intent` |
+| `teta_resolve_intent` | **flagship** — TWIRA-ranked routing; full T/I/P breakdown, `first_verified_at`, `proof_url`; filters `entity_types`, `min_trust`, `verified_only` | `/resolve-intent` |
 | `teta_get_profile` | public profile + public blocks (split from verify) | `/businesses/{id}/preview` |
 | `teta_verify_claim` | check a claim against an entity's verified blocks | `/businesses/{id}/preview` |
 
