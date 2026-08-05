@@ -10,7 +10,7 @@ import {
   resolveIntent,
 } from "./client.js";
 
-export const SERVER_VERSION = "1.5.1";
+export const SERVER_VERSION = "1.5.2";
 
 // Public URLs for proof_url — always the public hostnames, independent of
 // TETA_PI_API_URL (which may point at an internal address). The entity page
@@ -38,8 +38,54 @@ function createMcpServer(): McpServer {
     version: SERVER_VERSION,
   });
 
+  withCallLogging(server);
   registerTools(server);
   return server;
+}
+
+// ── Structured per-call logging (S-12, 2.9 hardening) ───────────────────────
+// Zero observability existed before this: no per-call record of which tool,
+// which entity, latency, or ok/error — so a reported bad result couldn't be
+// reconstructed after the fact. Wraps `server.tool` once, here, instead of
+// touching all 7 (and every future) tool handlers individually — every
+// registered tool gets a log line for free. Plain JSON on stdout, one line
+// per call; already captured by `journalctl -u tetapi-mcp`, no new infra.
+function withCallLogging(server: McpServer): void {
+  const originalTool = server.tool.bind(server) as (...args: any[]) => any;
+  (server as any).tool = (name: string, ...rest: any[]) => {
+    const handler = rest[rest.length - 1] as (args: any) => Promise<any>;
+    rest[rest.length - 1] = async (args: any) => {
+      const startedAt = Date.now();
+      try {
+        const result = await handler(args);
+        logToolCall(name, args, Date.now() - startedAt, "ok");
+        return result;
+      } catch (err) {
+        logToolCall(name, args, Date.now() - startedAt, "error", err);
+        throw err;
+      }
+    };
+    return originalTool(name, ...rest);
+  };
+}
+
+function logToolCall(
+  tool: string,
+  args: Record<string, unknown>,
+  latencyMs: number,
+  status: "ok" | "error",
+  err?: unknown
+): void {
+  const entity = args?.id ?? args?.entity_id ?? args?.endpoint_url ?? args?.query;
+  const entry: Record<string, unknown> = {
+    ts: new Date().toISOString(),
+    tool,
+    entity: typeof entity === "string" ? entity : null,
+    latency_ms: latencyMs,
+    status,
+  };
+  if (status === "error") entry.error = err instanceof Error ? err.message : String(err);
+  console.log(JSON.stringify(entry));
 }
 
 function registerTools(server: McpServer): void {
@@ -570,6 +616,36 @@ const PORT = parseInt(process.env.MCP_PORT ?? "3002", 10);
 // gets "Server already initialized" and is locked out until a restart.
 const sessions = new Map<string, StreamableHTTPServerTransport>();
 
+// In-memory sliding-window rate limiter, same pattern already proven for
+// api.tetapi.dev's other anonymous public endpoints (`routes/badge.py`,
+// `routes/tag.py` — teta-pi/api PR #12): per-IP hit list, trimmed to the
+// window on each check. MCP has no auth (S-11) and is a second anonymous
+// ingress in front of api.tetapi.dev, distinct from the API's own limits
+// (S-13) — this bounds worst-case cost/load per client. Single-process
+// in-memory is fine at current single-worker scale, same caveat as the API
+// side (S-10).
+const RATE_LIMIT = 60;
+const RATE_WINDOW_MS = 60_000;
+const rateHits = new Map<string, number[]>();
+
+function clientIp(req: import("node:http").IncomingMessage): string {
+  const fwd = req.headers["x-forwarded-for"];
+  const first = Array.isArray(fwd) ? fwd[0] : fwd;
+  return (first ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+}
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const window = (rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
+  if (window.length >= RATE_LIMIT) {
+    rateHits.set(ip, window);
+    return true;
+  }
+  window.push(now);
+  rateHits.set(ip, window);
+  return false;
+}
+
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -628,6 +704,14 @@ const httpServer = createServer(async (req, res) => {
   if (req.url !== "/mcp") {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32004, message: "Not found" }, id: null }));
+    return;
+  }
+
+  if (isRateLimited(clientIp(req))) {
+    res.writeHead(429, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({ jsonrpc: "2.0", error: { code: -32029, message: "Too Many Requests" }, id: null })
+    );
     return;
   }
 
