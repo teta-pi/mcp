@@ -9,9 +9,11 @@ Live at [`mcp.tetapi.dev`](https://mcp.tetapi.dev).
 ```yaml
 mcp_servers:
   - name: teta-pi
-    url: https://mcp.tetapi.dev/sse
-    auth: Bearer
+    url: https://mcp.tetapi.dev/mcp
 ```
+
+No auth required yet — all tools are read-only. Rate-limited per IP
+(see `docs/mcp.md` in `teta-pi/infra`).
 
 ## Tools (7)
 | Tool | Purpose |
