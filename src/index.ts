@@ -10,7 +10,7 @@ import {
   resolveIntent,
 } from "./client.js";
 
-export const SERVER_VERSION = "1.5.2";
+export const SERVER_VERSION = "1.5.3";
 
 // Public URLs for proof_url — always the public hostnames, independent of
 // TETA_PI_API_URL (which may point at an internal address). The entity page
@@ -53,15 +53,16 @@ function createMcpServer(): McpServer {
 function withCallLogging(server: McpServer): void {
   const originalTool = server.tool.bind(server) as (...args: any[]) => any;
   (server as any).tool = (name: string, ...rest: any[]) => {
-    const handler = rest[rest.length - 1] as (args: any) => Promise<any>;
-    rest[rest.length - 1] = async (args: any) => {
+    const handler = rest[rest.length - 1] as (args: any, extra: any) => Promise<any>;
+    rest[rest.length - 1] = async (args: any, extra: any) => {
       const startedAt = Date.now();
+      const sessionId = extra?.sessionId;
       try {
-        const result = await handler(args);
-        logToolCall(name, args, Date.now() - startedAt, "ok");
+        const result = await handler(args, extra);
+        logToolCall(name, args, Date.now() - startedAt, "ok", sessionId);
         return result;
       } catch (err) {
-        logToolCall(name, args, Date.now() - startedAt, "error", err);
+        logToolCall(name, args, Date.now() - startedAt, "error", sessionId, err);
         throw err;
       }
     };
@@ -69,17 +70,26 @@ function withCallLogging(server: McpServer): void {
   };
 }
 
+// `session` (the MCP `Mcp-Session-Id`, from `extra.sessionId`) is the only
+// addition over the 2.9 shape — it lets an off-server script pair a
+// `teta_search`/`teta_resolve_intent` call (entity = query text) with the
+// next `teta_verify_entity`/`teta_get_profile`/`teta_verify_claim` call
+// (entity = UUID) in the same session into a (query, clicked_entity) pair
+// for TWIRA weight tuning (2.4), without any new server-side correlation
+// logic or storage — see `scripts/analyze-usage.mjs`.
 function logToolCall(
   tool: string,
   args: Record<string, unknown>,
   latencyMs: number,
   status: "ok" | "error",
+  sessionId: string | undefined,
   err?: unknown
 ): void {
   const entity = args?.id ?? args?.entity_id ?? args?.endpoint_url ?? args?.query;
   const entry: Record<string, unknown> = {
     ts: new Date().toISOString(),
     tool,
+    session: sessionId ?? null,
     entity: typeof entity === "string" ? entity : null,
     latency_ms: latencyMs,
     status,
@@ -616,6 +626,44 @@ const PORT = parseInt(process.env.MCP_PORT ?? "3002", 10);
 // gets "Server already initialized" and is locked out until a restart.
 const sessions = new Map<string, StreamableHTTPServerTransport>();
 
+// ── SSE session limits (2.3, 2026-08-21) ────────────────────────────────────
+// Every session holds an SSE-capable transport open indefinitely (no auth,
+// so any client can open one) on a 1 vCPU / 1.9GB box already running at
+// ~950MB at rest. Two independent bounds, both needed:
+//
+// 1. A hard cap on concurrent sessions, so no burst of clients can hold
+//    unbounded long-lived connections open at once.
+// 2. An idle-session sweep, so a client that opens a session and never
+//    sends a clean DELETE (crash, network drop, an agent that just stops
+//    calling) doesn't hold its transport in memory for the process
+//    lifetime — this was the known unbounded-growth risk in
+//    known-issues.md (S-14, `sessions` Map with no expiry beyond
+//    `transport.onclose`); the sweep closes it too.
+//
+// MAX_CONCURRENT_SESSIONS=30: chosen from a live load test (see the 2.3 PR
+// description for the actual RAM/CPU numbers) — 30 concurrent SSE clients
+// added single-digit-MB RSS and negligible CPU on this box, comfortably
+// inside the "20-50" range for a single-core server with today's
+// occasional/demo-scale traffic. Revisit once real agent traffic volume is
+// known.
+const MAX_CONCURRENT_SESSIONS = 30;
+const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000; // 10 min, mirrors apiFetch's 15s-per-call timeout in spirit: bound worst-case resource hold, not user-facing latency
+const SESSION_SWEEP_INTERVAL_MS = 60_000;
+const sessionLastActivity = new Map<string, number>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, lastActivity] of sessionLastActivity) {
+    if (now - lastActivity <= SESSION_IDLE_TIMEOUT_MS) continue;
+    const transport = sessions.get(id);
+    console.log(
+      JSON.stringify({ ts: new Date().toISOString(), event: "session_idle_timeout", session: id })
+    );
+    // transport.onclose (below) removes it from both maps.
+    transport?.close().catch(() => {});
+  }
+}, SESSION_SWEEP_INTERVAL_MS).unref();
+
 // In-memory sliding-window rate limiter, same pattern already proven for
 // api.tetapi.dev's other anonymous public endpoints (`routes/badge.py`,
 // `routes/tag.py` — teta-pi/api PR #12): per-IP hit list, trimmed to the
@@ -720,6 +768,7 @@ const httpServer = createServer(async (req, res) => {
   const existing = sessionId ? sessions.get(sessionId) : undefined;
 
   if (existing) {
+    sessionLastActivity.set(sessionId!, Date.now());
     await existing.handleRequest(req, res);
     return;
   }
@@ -759,15 +808,31 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
+  if (sessions.size >= MAX_CONCURRENT_SESSIONS) {
+    res.writeHead(503, { "Content-Type": "application/json", "Retry-After": "30" });
+    res.end(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Server busy: too many concurrent sessions, retry shortly" },
+        id: null,
+      })
+    );
+    return;
+  }
+
   let transport: StreamableHTTPServerTransport;
   transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
     onsessioninitialized: (id) => {
       sessions.set(id, transport);
+      sessionLastActivity.set(id, Date.now());
     },
   });
   transport.onclose = () => {
-    if (transport.sessionId) sessions.delete(transport.sessionId);
+    if (transport.sessionId) {
+      sessions.delete(transport.sessionId);
+      sessionLastActivity.delete(transport.sessionId);
+    }
   };
 
   await createMcpServer().connect(transport);
