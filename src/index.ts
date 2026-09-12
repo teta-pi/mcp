@@ -10,7 +10,7 @@ import {
   resolveIntent,
 } from "./client.js";
 
-export const SERVER_VERSION = "1.5.3";
+export const SERVER_VERSION = "1.5.4";
 
 // Public URLs for proof_url — always the public hostnames, independent of
 // TETA_PI_API_URL (which may point at an internal address). The entity page

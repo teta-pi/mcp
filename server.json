@@ -8,7 +8,7 @@
     "url": "https://github.com/teta-pi/mcp",
     "source": "github"
   },
-  "version": "1.5.3",
+  "version": "1.5.4",
   "remotes": [
     {
       "type": "streamable-http",
