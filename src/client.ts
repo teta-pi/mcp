@@ -1,5 +1,12 @@
 const API_BASE = process.env.TETA_PI_API_URL ?? "http://localhost:8000/api/v1";
 
+// Dedicated service account's pk_live_ key (see docs/decisions.md), attached
+// only to the one call that needs it — /verify-endpoint requires
+// `get_current_user` (added by the 1.7 SSRF fix; it doesn't check ownership,
+// just "any active account"). Every other route MCP calls is unauthenticated
+// by design, so this is scoped to verifyEndpoint() below, not sent globally.
+const SERVICE_API_KEY = process.env.TETA_PI_SERVICE_API_KEY;
+
 // Matches api/app/schemas/business.py :: BusinessSearchResult
 export interface BusinessSearchResult {
   id: string;
@@ -84,10 +91,16 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   try {
+    // `...init` spreads first so an explicit `headers` below always wins and
+    // gets to merge with the default — previously `...init` came last, so
+    // any caller passing its own `headers` (as verifyEndpoint now does)
+    // would silently clobber the Content-Type default instead of merging
+    // with it. No existing caller set `init.headers` before this change, so
+    // this doesn't alter any current request.
     const res = await fetch(url, {
+      ...init,
       headers: { "Content-Type": "application/json", ...init?.headers },
       signal: controller.signal,
-      ...init,
     });
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText);
@@ -175,6 +188,7 @@ export async function verifyEndpoint(params: {
 }): Promise<EndpointVerifyResult> {
   return apiFetch<EndpointVerifyResult>("/verify-endpoint", {
     method: "POST",
+    headers: SERVICE_API_KEY ? { Authorization: `Bearer ${SERVICE_API_KEY}` } : undefined,
     body: JSON.stringify(params),
   });
 }
