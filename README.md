@@ -1,5 +1,7 @@
 # TETA+PI MCP Server
 
+[![CodeQL](https://github.com/teta-pi/mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/teta-pi/mcp/actions/workflows/codeql.yml) [![Dependency audit](https://github.com/teta-pi/mcp/actions/workflows/npm-audit.yml/badge.svg)](https://github.com/teta-pi/mcp/actions/workflows/npm-audit.yml) [![Deploy](https://github.com/teta-pi/mcp/actions/workflows/deploy.yml/badge.svg)](https://github.com/teta-pi/mcp/actions/workflows/deploy.yml)
+
 TypeScript server exposing the **TETA+PI** verified entity registry to AI
 agents via the [Model Context Protocol](https://modelcontextprotocol.io).
 Live at [`mcp.tetapi.dev`](https://mcp.tetapi.dev).
