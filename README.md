@@ -32,8 +32,8 @@ Stateless — every call hits `api.tetapi.dev` over HTTP. HTTP + SSE transport,
 one session per client (`@modelcontextprotocol/sdk`).
 
 ## Docs
-Canonical docs live in [`teta-pi/infra`](https://github.com/teta-pi/infra):
-see `docs/mcp.md`.
+Canonical docs live in `teta-pi/infra`, our internal infrastructure docs
+repo (private).
 
 ## License
 MIT © 2026 TETA+PI · tetapi.dev
