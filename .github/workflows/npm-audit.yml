@@ -1,6 +1,10 @@
 name: Dependency audit (npm audit)
 
 on:
+  # pull_request so the check also runs on PRs (needed to make it a required
+  # status check; 7.9). Only WHEN it runs changed, not what it does.
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
   schedule:
