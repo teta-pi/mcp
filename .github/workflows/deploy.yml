@@ -31,10 +31,20 @@ jobs:
 
       - name: Sync MCP server
         run: |
-          rsync -az -e "ssh -i ~/.ssh/tetapi_ed25519" \
+          # --chown=root:root on EVERY rsync: without it, `-a` implies -o -g
+          # and, running as root on the receiver, rsync preserves the runner's
+          # numeric uid/gid (user `runner` = 1001). uid 1001 on the droplet is
+          # co-tenant `hellfire`, so every mcp deploy chowned
+          # /opt/tetapi/mcp/dist (which `tetapi-mcp` executes as root via
+          # `node dist/index.js`) and /opt/tetapi/mcp/package.json (which the
+          # next deploy feeds to `npm install` as root — a lifecycle-script
+          # path) to hellfire:hellfire. Both are co-tenant->root (S-19, the
+          # same trap 5.11 fixed in api). Forcing root:root keeps the tree
+          # owned by root. (rsync >=3.1.0 on both ends.)
+          rsync -az --chown=root:root -e "ssh -i ~/.ssh/tetapi_ed25519" \
             --delete \
             dist/ root@164.90.235.66:/opt/tetapi/mcp/dist/
-          rsync -az -e "ssh -i ~/.ssh/tetapi_ed25519" \
+          rsync -az --chown=root:root -e "ssh -i ~/.ssh/tetapi_ed25519" \
             package.json \
             root@164.90.235.66:/opt/tetapi/mcp/
 
