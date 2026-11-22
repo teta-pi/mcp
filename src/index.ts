@@ -9,8 +9,10 @@ import {
   verifyEndpoint,
   resolveIntent,
 } from "./client.js";
+import { checkRateLimit, clientIp } from "./ratelimit.js";
+import { createSessionStore, startIdleSweep } from "./sessions.js";
 
-export const SERVER_VERSION = "1.5.4";
+export const SERVER_VERSION = "1.5.5";
 
 // Public URLs for proof_url — always the public hostnames, independent of
 // TETA_PI_API_URL (which may point at an internal address). The entity page
@@ -624,7 +626,8 @@ const PORT = parseInt(process.env.MCP_PORT ?? "3002", 10);
 // only ever have one active session for the life of the process — every
 // second client (a second Claude Code window, MCP Inspector, another agent)
 // gets "Server already initialized" and is locked out until a restart.
-const sessions = new Map<string, StreamableHTTPServerTransport>();
+const sessionStore = createSessionStore<StreamableHTTPServerTransport>();
+const { sessions, lastActivity: sessionLastActivity } = sessionStore;
 
 // ── SSE session limits (2.3, 2026-08-21) ────────────────────────────────────
 // Every session holds an SSE-capable transport open indefinitely (no auth,
@@ -633,12 +636,11 @@ const sessions = new Map<string, StreamableHTTPServerTransport>();
 //
 // 1. A hard cap on concurrent sessions, so no burst of clients can hold
 //    unbounded long-lived connections open at once.
-// 2. An idle-session sweep, so a client that opens a session and never
-//    sends a clean DELETE (crash, network drop, an agent that just stops
-//    calling) doesn't hold its transport in memory for the process
-//    lifetime — this was the known unbounded-growth risk in
-//    known-issues.md (S-14, `sessions` Map with no expiry beyond
-//    `transport.onclose`); the sweep closes it too.
+// 2. An idle-session sweep (src/sessions.ts), so a client that opens a
+//    session and never sends a clean DELETE (crash, network drop, an agent
+//    that just stops calling) doesn't hold its transport in memory for the
+//    process lifetime — this closes the unbounded-growth risk tracked as
+//    S-14 (docs/known-issues.md).
 //
 // MAX_CONCURRENT_SESSIONS=30: chosen from a live load test (see the 2.3 PR
 // description for the actual RAM/CPU numbers) — 30 concurrent SSE clients
@@ -649,49 +651,29 @@ const sessions = new Map<string, StreamableHTTPServerTransport>();
 const MAX_CONCURRENT_SESSIONS = 30;
 const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000; // 10 min, mirrors apiFetch's 15s-per-call timeout in spirit: bound worst-case resource hold, not user-facing latency
 const SESSION_SWEEP_INTERVAL_MS = 60_000;
-const sessionLastActivity = new Map<string, number>();
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, lastActivity] of sessionLastActivity) {
-    if (now - lastActivity <= SESSION_IDLE_TIMEOUT_MS) continue;
-    const transport = sessions.get(id);
-    console.log(
-      JSON.stringify({ ts: new Date().toISOString(), event: "session_idle_timeout", session: id })
-    );
-    // transport.onclose (below) removes it from both maps.
-    transport?.close().catch(() => {});
-  }
-}, SESSION_SWEEP_INTERVAL_MS).unref();
+startIdleSweep(sessionStore, SESSION_SWEEP_INTERVAL_MS, SESSION_IDLE_TIMEOUT_MS, (id) => {
+  const transport = sessions.get(id);
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event: "session_idle_timeout", session: id }));
+  // transport.onclose (below) removes it from both maps.
+  transport?.close().catch(() => {});
+});
 
-// In-memory sliding-window rate limiter, same pattern already proven for
-// api.tetapi.dev's other anonymous public endpoints (`routes/badge.py`,
-// `routes/tag.py` — teta-pi/api PR #12): per-IP hit list, trimmed to the
-// window on each check. MCP has no auth (S-11) and is a second anonymous
-// ingress in front of api.tetapi.dev, distinct from the API's own limits
-// (S-13) — this bounds worst-case cost/load per client. Single-process
-// in-memory is fine at current single-worker scale, same caveat as the API
-// side (S-10).
+// Shared Redis counter (S-10, src/ratelimit.ts), same 60 req/min/IP budget
+// as before. MCP has no auth (S-11) and is a second anonymous ingress in
+// front of api.tetapi.dev, distinct from the API's own limits (S-13) — this
+// bounds worst-case cost/load per client, now correct across restarts
+// (the in-memory version's counter reset every deploy).
 const RATE_LIMIT = 60;
-const RATE_WINDOW_MS = 60_000;
-const rateHits = new Map<string, number[]>();
+const RATE_WINDOW_SECONDS = 60;
 
-function clientIp(req: import("node:http").IncomingMessage): string {
-  const fwd = req.headers["x-forwarded-for"];
-  const first = Array.isArray(fwd) ? fwd[0] : fwd;
-  return (first ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
-}
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const window = (rateHits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS);
-  if (window.length >= RATE_LIMIT) {
-    rateHits.set(ip, window);
-    return true;
-  }
-  window.push(now);
-  rateHits.set(ip, window);
-  return false;
+async function isRateLimited(ip: string): Promise<boolean> {
+  const allowed = await checkRateLimit(`ratelimit:mcp:${ip}`, {
+    limit: RATE_LIMIT,
+    windowSeconds: RATE_WINDOW_SECONDS,
+    failOpen: true,
+  });
+  return !allowed;
 }
 
 const CORS_HEADERS: Record<string, string> = {
@@ -755,7 +737,7 @@ const httpServer = createServer(async (req, res) => {
     return;
   }
 
-  if (isRateLimited(clientIp(req))) {
+  if (await isRateLimited(clientIp(req))) {
     res.writeHead(429, { "Content-Type": "application/json" });
     res.end(
       JSON.stringify({ jsonrpc: "2.0", error: { code: -32029, message: "Too Many Requests" }, id: null })
